@@ -1,4 +1,4 @@
-#%%
+
 import pandas as pd
 import numpy as np
 import scipy
@@ -85,7 +85,98 @@ print(filtered_analysis)
 
 
 
+import matplotlib.pyplot as plt
+import seaborn as sns
 
+# Set style for high-quality publication plots
+plt.style.use('default')
+sns.set_palette("husl")
+
+# Create the bar plot
+fig, ax = plt.subplots(figsize=(12, 8))
+
+# Prepare data for plotting
+doses = filtered_analysis['EtOH dose'].unique()
+times = filtered_analysis['Time'].unique()
+x_pos = np.arange(len(doses))
+width = 0.35
+
+# Colors for each time point
+colors = ['#2E86AB', '#A23B72']  # Blue and magenta
+
+# Conversion factor: mM to mg/dL (molecular mass of ethanol = 46.068 g/mol)
+# mM * 46.068 = mg/dL, then divide by 10
+conversion_factor = 46.068 / 10
+
+# Create bars for each time point
+for i, time in enumerate(times):
+    time_data = filtered_analysis[filtered_analysis['Time'] == time]
+    means = time_data['Mean_Conc'].values * conversion_factor  # Convert to mg/dL and divide by 10
+    
+    bars = ax.bar(x_pos + i*width, means, width, 
+                  label=f'{time} min', 
+                  color=colors[i],
+                  alpha=0.8,
+                  edgecolor='black',
+                  linewidth=1.5)
+
+# Add individual data points
+for i, time in enumerate(times):
+    for j, dose in enumerate(doses):
+        # Get individual data points for this dose and time
+        individual_data = bec_with_metadata[
+            (bec_with_metadata['EtOH dose'] == dose) & 
+            (bec_with_metadata['Time'] == time)
+        ]['Predicted_Conc'].dropna() * conversion_factor  # Convert to mg/dL and divide by 10
+        
+        # Add jitter to x-position for better visibility
+        x_positions = np.random.normal(j + i*width, 0.02, len(individual_data))
+        
+        ax.scatter(x_positions, individual_data, 
+                  color='white', 
+                  s=60, 
+                  alpha=0.9,
+                  edgecolors='black',
+                  linewidth=1.5,
+                  zorder=5)
+
+# Customize the plot for poster quality
+ax.set_xlabel('EtOH Dose', fontsize=18, fontweight='bold')
+ax.set_ylabel('BEC Concentration (mg/dL)', fontsize=18, fontweight='bold')  # Units remain the same
+ax.set_title('Blood Ethanol Concentration After Acute Ethanol', fontsize=20, fontweight='bold', pad=20)
+
+# Customize ticks and labels
+ax.set_xticks(x_pos + width/2)
+ax.set_xticklabels(doses, fontsize=16)
+ax.tick_params(axis='y', labelsize=14)
+ax.tick_params(axis='x', labelsize=16)
+
+# Customize legend
+ax.legend(fontsize=16, loc='upper left', frameon=True, fancybox=True, shadow=True)
+
+# Add grid for better readability
+ax.grid(True, alpha=0.3, linestyle='--')
+ax.set_axisbelow(True)
+
+# Set y-axis to start from 0
+ax.set_ylim(0, ax.get_ylim()[1] * 1.1)
+
+# Add value labels on bars
+for i, time in enumerate(times):
+    time_data = filtered_analysis[filtered_analysis['Time'] == time]
+    means = time_data['Mean_Conc'].values * conversion_factor  # Convert to mg/dL and divide by 10
+    
+    for j, mean in enumerate(means):
+        ax.text(j + i*width, mean + ax.get_ylim()[1]*0.02, f'{mean:.1f}', 
+                ha='center', va='bottom', fontsize=14, fontweight='bold')
+
+# Adjust layout and make it poster-ready
+plt.tight_layout()
+plt.subplots_adjust(top=0.92)
+
+# Save as high-resolution figure
+plt.savefig('BEC_analysis_poster.png', dpi=300, bbox_inches='tight')
+plt.show()
 
 
 
