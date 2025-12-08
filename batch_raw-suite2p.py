@@ -9,7 +9,7 @@ DATA_PATH = Path(r'E:\inbox')
 SAVE_PATH = Path(r'E:\inbox\processed')
 FRAME_SHAPE = (512, 512)
 RAW_SUFFIX = '001.raw'
-TIFF_SUFFIX = '.tiff'
+TIFF_SUFFIX = '.tif*'
 SESSION_MAP = {
     251014: 'ses-01',
     251015: 'ses-02',
@@ -75,7 +75,7 @@ for raw_path in raw_files:
     # if video_gpu.shape[0] > 9100:
     #     print(f"The raw file {raw_path} has more than 9100 frames.")
     saved_path = write_ome_tiff(video_gpu, raw_path)
-    print(f'Saved {saved_path}')
+    print(f'Converted {raw_path} -> {saved_path}')
 
 tiff_files = discover_tiff_files(SAVE_PATH)
 print(f'Running suite2p on {len(tiff_files)} TIFF file(s) under {SAVE_PATH}')
