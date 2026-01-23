@@ -9,12 +9,12 @@ import pandas as pd
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 
-dataset = pd.read_pickle(r"E:\Projects\ACUTEVIS\260122_ACUTEVIS.pkl")
+dataset = pd.read_pickle(r"C:\Projects\260122_ACUTEVIS.pkl")
 
 print(dataset.head())
 
 keys = pd.DataFrame(dataset.keys())
-# %% CALCULATE MEAN OSI DSI ACROSS SUBJECTS
+#%% CREATE TRIALS DATAFRAME
 
 # create time vector (15Hz) for dff
 dataset[('meta','time_vector')] = dataset[('suite2p','deltaf_f')].map(lambda arr : pd.Series(np.arange(arr.shape[1]) / 15.0))
@@ -82,9 +82,66 @@ def trials(row):
     return pd.DataFrame(all_trials)
 
 dataset[('meta','trials')] = dataset.apply(trials, axis=1)
+#%% Mean ROI response to ON/OFF across sessions (cohort) 
 
+import matplotlib.pyplot as plt
 
-# %% TUNING, OSI/DSI VECTOR
+def _roi_mean_response(trials_df: pd.DataFrame):
+    if trials_df is None or trials_df.empty:
+        return None
+    dff_on_trials = trials_df['dff_on'].to_numpy()
+    dff_off_trials = trials_df['dff_off'].to_numpy()
+    if len(dff_on_trials) == 0 or len(dff_off_trials) == 0:
+        return None
+    on_stack = np.stack(dff_on_trials, axis=0)
+    off_stack = np.stack(dff_off_trials, axis=0)
+    roi_on = np.nanmean(on_stack, axis=(0, 2))
+    roi_off = np.nanmean(off_stack, axis=(0, 2))
+    return roi_on, roi_off
+
+roi_by_injection = defaultdict(lambda: {'on': [], 'off': []})
+
+for _, row in dataset.iterrows():
+    injection = row[('session_config', 'injection')]
+    if pd.isna(injection):
+        continue
+    trials_df = row[('meta', 'trials')]
+    roi_result = _roi_mean_response(trials_df)
+    if roi_result is None:
+        continue
+    roi_on, roi_off = roi_result
+    roi_by_injection[injection]['on'].extend(roi_on.tolist())
+    roi_by_injection[injection]['off'].extend(roi_off.tolist())
+
+preferred_order = ['Baseline', 'Saline', 'Low', 'High']
+injection_ids = [inj for inj in preferred_order if inj in roi_by_injection]
+injection_ids.extend([inj for inj in roi_by_injection.keys() if inj not in injection_ids])
+
+means_on, means_off, errs_on, errs_off = [], [], [], []
+for inj in injection_ids:
+    on_vals = np.asarray(roi_by_injection[inj]['on'], dtype=float)
+    off_vals = np.asarray(roi_by_injection[inj]['off'], dtype=float)
+    means_on.append(np.nanmean(on_vals))
+    means_off.append(np.nanmean(off_vals))
+    errs_on.append(np.nanstd(on_vals))
+    errs_off.append(np.nanstd(off_vals))
+
+x_pos = np.arange(len(injection_ids))
+bar_w = 0.35
+
+fig, ax = plt.subplots(figsize=(7, 4))
+ax.bar(x_pos - bar_w / 2, means_on, width=bar_w, yerr=errs_on, label='ON', color='#4C78A8', alpha=0.9)
+ax.bar(x_pos + bar_w / 2, means_off, width=bar_w, yerr=errs_off, label='OFF', color='#F58518', alpha=0.9)
+ax.set_xticks(x_pos)
+ax.set_xticklabels(injection_ids)
+ax.set_ylabel('Mean dF/F')
+ax.set_xlabel('Injection')
+ax.set_title('Mean dF/F ON/OFF by Condition')
+ax.axhline(0, color='black', linewidth=0.8, alpha=0.6)
+ax.legend()
+plt.tight_layout()
+
+#%% TUNING, OSI/DSI VECTOR
 subject = 'ACUTEVIS16'
 session = 'ses-01'
 task =  'task-gratings'
@@ -162,8 +219,7 @@ def osi_dsi(tuning_dict):
 osi_dsi_values = osi_dsi(pref_on)
 print(f"Orientation Selectivity Index (OSI): {osi_dsi_values['osi']}")
 print(f"Direction Selectivity Index (DSI): {osi_dsi_values['dsi']}")
-# %% create dataframe of osi dsi across subject, session, task, roi
-
+#%% create dataframe of osi dsi across subject, session, task, roi
 def compute_task_grating_selectivity(dataset: pd.DataFrame, task_name: str = 'task-gratings') -> pd.DataFrame:
     """Return trial-mean orientation/direction tuning vectors per subject/session."""
 
@@ -552,7 +608,7 @@ def plot_osi_percent_of_baseline(summary_df, metric=('metrics', 'norm_osi'), fig
 
 
 osi_percent_baseline_fig = plot_osi_percent_of_baseline(grating_selectivity_summary)
-# %% Plot distribution of selectivity across ROIs per subject, per injection
+#%% Plot distribution of selectivity across ROIs per subject, per injection
 
 def plot_subject_selectivity_distribution(summary_df, metric="osi", figsize=None):
     """Plot per-subject ROI selectivity distributions grouped by injection."""
@@ -983,7 +1039,7 @@ def _collect_direction_tuning_entries(summary_df: pd.DataFrame, task_name: str |
             continue
 
         pref_direction = np.asarray(row[('metrics', 'preferred_direction')], dtype=float).ravel()
-        osi_values = np.asarray(row.get(('metrics', 'osi'), np.nan), dtype=float).ravel()
+        dsi_values = np.asarray(row.get(('metrics', 'dsi'), np.nan), dtype=float).ravel()
         n_rois = direction_stack.shape[1]
 
         for roi_idx in range(n_rois):
@@ -993,9 +1049,9 @@ def _collect_direction_tuning_entries(summary_df: pd.DataFrame, task_name: str |
             if not np.isfinite(pref_angle):
                 continue
 
-            osi_value = np.nan
-            if roi_idx < osi_values.size:
-                osi_value = float(osi_values[roi_idx])
+            dsi_value = np.nan
+            if roi_idx < dsi_values.size:
+                dsi_value = float(dsi_values[roi_idx])
 
             angle_match = np.isclose(direction_angles_array, pref_angle, atol=1e-6)
             if not angle_match.any():
@@ -1026,7 +1082,7 @@ def _collect_direction_tuning_entries(summary_df: pd.DataFrame, task_name: str |
                 'injection': injection_label,
                 'relative_angles': relative_angles,
                 'normalized': normalized,
-                'osi': osi_value,
+                'dsi': dsi_value,
             })
 
     if not roi_entries:
@@ -1162,28 +1218,28 @@ def plot_combined_preferred_direction_tuning(summary_df, task_name='task-grating
 def plot_direction_tuning_percentile_panels(
     summary_df: pd.DataFrame,
     task_name: str = 'task-gratings',
-    osi_threshold: float = 0.3,
+    dsi_threshold: float = 0.3,
     figsize: tuple[float, float] = (10, 6),
 ):
-    """Plot separate direction tuning summaries split by an OSI threshold."""
+    """Plot separate direction tuning summaries split by a DSI threshold."""
     relative_angles, injection_labels, roi_entries = _collect_direction_tuning_entries(summary_df, task_name)
 
-    osi_values = np.asarray([entry.get('osi', np.nan) for entry in roi_entries], dtype=float)
-    if osi_values.size == 0:
-        raise ValueError('No OSI values available for threshold split')
+    dsi_values = np.asarray([entry.get('dsi', np.nan) for entry in roi_entries], dtype=float)
+    if dsi_values.size == 0:
+        raise ValueError('No DSI values available for threshold split')
 
-    finite_mask = np.isfinite(osi_values)
+    finite_mask = np.isfinite(dsi_values)
     if not finite_mask.any():
-        raise ValueError('No finite OSI values available for threshold split')
+        raise ValueError('No finite DSI values available for threshold split')
 
-    threshold = float(osi_threshold)
+    threshold = float(dsi_threshold)
     if not np.isfinite(threshold):
         threshold = 0.3
 
-    high_entries = [entry for entry, value in zip(roi_entries, osi_values) if np.isfinite(value) and value > threshold]
-    low_entries = [entry for entry, value in zip(roi_entries, osi_values) if np.isfinite(value) and value <= threshold]
+    high_entries = [entry for entry, value in zip(roi_entries, dsi_values) if np.isfinite(value) and value > threshold]
+    low_entries = [entry for entry, value in zip(roi_entries, dsi_values) if np.isfinite(value) and value <= threshold]
 
-    finite_values = osi_values[finite_mask]
+    finite_values = dsi_values[finite_mask]
 
     if not high_entries:
         best_idx = int(np.nanargmax(finite_values))
@@ -1194,8 +1250,8 @@ def plot_direction_tuning_percentile_panels(
         low_entries = [roi_entries[np.flatnonzero(finite_mask)[worst_idx]]]
 
     title_suffix = f" ({task_name})" if task_name is not None else ""
-    high_title = f'High-OSI ROIs (> {threshold:.2f} OSI){title_suffix}'
-    low_title = f'Low-OSI ROIs (<= {threshold:.2f} OSI){title_suffix}'
+    high_title = f'High-DSI ROIs (> {threshold:.2f} DSI){title_suffix}'
+    low_title = f'Low-DSI ROIs (<= {threshold:.2f} DSI){title_suffix}'
 
     high_fig = _render_direction_tuning_plot(high_entries, injection_labels, relative_angles, high_title, figsize)
     low_fig = _render_direction_tuning_plot(low_entries, injection_labels, relative_angles, low_title, figsize)
@@ -1206,7 +1262,7 @@ def plot_direction_tuning_percentile_panels(
 combined_direction_tuning_fig = plot_combined_preferred_direction_tuning(grating_selectivity_summary)
 top_direction_fig, bottom_direction_fig = plot_direction_tuning_percentile_panels(
     grating_selectivity_summary,
-    osi_threshold=0.3,
+    dsi_threshold=0.4,
 )
 #%% PLOT SINGLE ROI TUNING CURVE
 def plot_tuning_curve(angles, responses):
@@ -1250,7 +1306,7 @@ plot_tuning_curve(pref_on.dir.dir_mean.index, pref_on.dir.dir_mean.values)
 
 
 
-# %% PLOTTING FUNCTIONS
+#%% PLOTTING FUNCTIONS
 import numpy as np
 import matplotlib.pyplot as plt
 
