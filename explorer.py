@@ -6,26 +6,84 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.colors as pc
 
-DATASET_PATH = r"C:\Projects\260122_ACUTEVIS.pkl"
-SUBJECT_ID = "ACUTEVIS14"
+DATASET_PATH = r"C:\Projects\260205_ACUTEVIS.pkl"
+SUBJECT_ID = "ACUTEVIS06"
 TASK_NAME = "task-movies"
 SESSION_IDS = ["ses-01", "ses-02", "ses-03", "ses-04"]
-DFF_FRAME_RATE_HZ = 10.0
+DFF_FRAME_RATE_HZ = 15.0
 ENCODER_FRAME_RATE_HZ = 10.0
 PUPIL_FRAME_RATE_HZ = 20.0
 
 
-def load_dataset(path: str) -> pd.DataFrame:
-    return pd.read_pickle(path)
+def _as_array(value: object) -> np.ndarray:
+    return np.asarray(value, dtype=float)
+
+
+def _add_trace(
+    fig: go.Figure,
+    x: np.ndarray,
+    y: np.ndarray,
+    label: str,
+    color: str,
+    legend: str,
+    row: int,
+) -> int:
+    fig.add_trace(
+        go.Scatter(
+            x=x,
+            y=y,
+            mode="lines",
+            name=label,
+            line=dict(color=color),
+            legend=legend,
+        ),
+        row=row,
+        col=1,
+    )
+    return len(fig.data) - 1
+
+
+def _annotation_texts(subject_id: str, session_id: str) -> list[dict]:
+    return [
+        {
+            "text": f"Mean dF/F Trace ({subject_id}, {session_id}, {TASK_NAME})",
+            "x": 0.5,
+            "y": 1.0,
+            "xref": "paper",
+            "yref": "paper",
+            "showarrow": False,
+            "font": {"size": 14},
+        },
+        {
+            "text": f"Encoder Speed (mm) ({subject_id}, {session_id}, {TASK_NAME})",
+            "x": 0.5,
+            "y": 0.64,
+            "xref": "paper",
+            "yref": "paper",
+            "showarrow": False,
+            "font": {"size": 14},
+        },
+        {
+            "text": f"Pupil Diameter (mm) ({subject_id}, {session_id}, {TASK_NAME})",
+            "x": 0.5,
+            "y": 0.28,
+            "xref": "paper",
+            "yref": "paper",
+            "showarrow": False,
+            "font": {"size": 14},
+        },
+    ]
 
 
 def main() -> None:
-    dataset = load_dataset(DATASET_PATH)
+    dataset = pd.read_pickle(DATASET_PATH)
     mean_index = dataset.suite2p.mean_fluo_dff.index
     task_mask = mean_index.get_level_values(2) == TASK_NAME
     task_index = mean_index[task_mask]
     subjects = sorted(task_index.get_level_values(0).unique())
     sessions = sorted(task_index.get_level_values(1).unique())
+    if SESSION_IDS:
+        sessions = [session for session in SESSION_IDS if session in sessions]
 
     default_subject = SUBJECT_ID if SUBJECT_ID in subjects else subjects[0]
     default_session = sessions[0]
@@ -58,22 +116,10 @@ def main() -> None:
                 continue
 
             try:
-                mean_trace = np.asarray(
-                    dataset.suite2p.mean_fluo_dff.loc[key],
-                    dtype=float,
-                )
-                injection_label = dataset.loc[
-                    key,
-                    ("session_config", "injection"),
-                ]
-                speed_trace = np.asarray(
-                    dataset.encoder.speed_mm.loc[key],
-                    dtype=float,
-                )
-                pupil_trace = np.asarray(
-                    dataset.pupil.pupil_diameter_mm.loc[key],
-                    dtype=float,
-                )
+                mean_trace = _as_array(dataset.suite2p.mean_fluo_dff.loc[key])
+                injection_label = dataset.loc[key, ("session_config", "injection")]
+                speed_trace = _as_array(dataset.encoder.speed_mm.loc[key])
+                pupil_trace = _as_array(dataset.pupil.pupil_diameter_mm.loc[key])
             except KeyError:
                 continue
 
@@ -84,49 +130,17 @@ def main() -> None:
             pupil_time_s = np.arange(pupil_trace.size) / PUPIL_FRAME_RATE_HZ
 
             group_key = (subject_id, session_id)
-            trace_groups[group_key] = []
+            trace_groups.setdefault(group_key, [])
 
-            fig.add_trace(
-                go.Scatter(
-                    x=dff_time_s,
-                    y=mean_trace,
-                    mode="lines",
-                    name=label,
-                    line=dict(color=color),
-                    legend="legend",
-                ),
-                row=1,
-                col=1,
+            trace_groups[group_key].append(
+                _add_trace(fig, dff_time_s, mean_trace, label, color, "legend", 1)
             )
-            trace_groups[group_key].append(len(fig.data) - 1)
-
-            fig.add_trace(
-                go.Scatter(
-                    x=encoder_time_s,
-                    y=speed_trace,
-                    mode="lines",
-                    name=label,
-                    line=dict(color=color),
-                    legend="legend2",
-                ),
-                row=2,
-                col=1,
+            trace_groups[group_key].append(
+                _add_trace(fig, encoder_time_s, speed_trace, label, color, "legend2", 2)
             )
-            trace_groups[group_key].append(len(fig.data) - 1)
-
-            fig.add_trace(
-                go.Scatter(
-                    x=pupil_time_s,
-                    y=pupil_trace,
-                    mode="lines",
-                    name=label,
-                    line=dict(color=color),
-                    legend="legend3",
-                ),
-                row=3,
-                col=1,
+            trace_groups[group_key].append(
+                _add_trace(fig, pupil_time_s, pupil_trace, label, color, "legend3", 3)
             )
-            trace_groups[group_key].append(len(fig.data) - 1)
 
     buttons = []
     for subject_id, session_id in trace_groups.keys():
@@ -141,35 +155,7 @@ def main() -> None:
                     {"visible": visible},
                     {
                         "title": f"Mean dF/F, Encoder Speed, and Pupil Diameter ({subject_id}, {session_id}, {TASK_NAME})",
-                        "annotations": [
-                            {
-                                "text": f"Mean dF/F Trace ({subject_id}, {session_id}, {TASK_NAME})",
-                                "x": 0.5,
-                                "y": 1.0,
-                                "xref": "paper",
-                                "yref": "paper",
-                                "showarrow": False,
-                                "font": {"size": 14},
-                            },
-                            {
-                                "text": f"Encoder Speed (mm) ({subject_id}, {session_id}, {TASK_NAME})",
-                                "x": 0.5,
-                                "y": 0.64,
-                                "xref": "paper",
-                                "yref": "paper",
-                                "showarrow": False,
-                                "font": {"size": 14},
-                            },
-                            {
-                                "text": f"Pupil Diameter (mm) ({subject_id}, {session_id}, {TASK_NAME})",
-                                "x": 0.5,
-                                "y": 0.28,
-                                "xref": "paper",
-                                "yref": "paper",
-                                "showarrow": False,
-                                "font": {"size": 14},
-                            },
-                        ],
+                        "annotations": _annotation_texts(subject_id, session_id),
                     },
                 ],
             }
