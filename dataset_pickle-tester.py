@@ -6,38 +6,39 @@ Created on Mon Nov 24 14:11:01 2025
 #%%
 import numpy as np
 import pandas as pd
-from collections import defaultdict
+import matplotlib.pyplot as plt
+from collections import defaultdict 
 from collections.abc import Mapping, Sequence
 
-dataset = pd.read_pickle(r"C:\Projects\260122_ACUTEVIS.pkl")
-
-print(dataset.head())
+dataset = pd.read_pickle(r"C:\Projects\260210_ACUTEVIS_dataset.pkl")
 
 keys = pd.DataFrame(dataset.keys())
+print(keys)
+
 #%% CREATE TRIALS DATAFRAME
 
-# create time vector (15Hz) for dff
-dataset[('meta','time_vector')] = dataset[('suite2p','deltaf_f')].map(lambda arr : pd.Series(np.arange(arr.shape[1]) / 15.0))
-
-# CREATE AN ARTIFICIAL TIME INDEX FOR EVERY TRIAL
-N_TRIALS   = 120
-TRIAL_S    = 5.0
-GRAY_S     = 3.0               # within each trial
-GRATING_S  = 2.0               # (informational; TRIAL_S should equal GRAY_S + GRATING_S)
-
-# 0-based artificial trial indices (length = 130) stored as a Series in the MultiIndex column
-dataset[('psychopy', 'trial_index')] = dataset[('suite2p','deltaf_f')].map(
-    lambda _ : pd.Series(np.arange(N_TRIALS), dtype="Int64"))
+dataset[('suite2p','time_zero_s')] = dataset[('suite2p','time_native_s')].map(
+    lambda x: np.asarray(x) - np.asarray(x)[0] if x is not None and len(x) else x
+)
 
 # Per-row DataFrame of trial stamps (same columns as your psychopy-derived structure)
-dataset[('psychopy', 'trial_stamps')] = dataset[('suite2p','deltaf_f')].map(
-    lambda _ : pd.DataFrame({
-        "trial_num":      np.arange(N_TRIALS, dtype=np.int64),
-        "trial_start":    np.arange(N_TRIALS) * TRIAL_S,
-        "gray_start":     np.arange(N_TRIALS) * TRIAL_S,
-        "gratings_start": np.arange(N_TRIALS) * TRIAL_S + GRAY_S,
-        "trial_end":      np.arange(N_TRIALS) * TRIAL_S + TRIAL_S,
-    }))
+def _to_float_array(values):
+    if values is None:
+        return np.array([], dtype=float)
+    if isinstance(values, pd.Series):
+        values = values.to_numpy()
+    return np.asarray(values, dtype=float).ravel()
+
+dataset[('psychopy', 'trial_stamps')] = dataset.apply(
+    lambda row: pd.DataFrame({
+        "trial_num": _to_float_array(row.get(('psychopy', 'gratings_trials.thisN'))),
+        "trial_start": _to_float_array(row.get(('psychopy', 'gratings_display_gratings.started'))),
+        "gray_start": _to_float_array(row.get(('psychopy', 'gratings_stim_grayScreen.started'))),
+        "gratings_start": _to_float_array(row.get(('psychopy', 'gratings_stim_grating.started'))),
+        "trial_end": _to_float_array(row.get(('psychopy', 'gratings_display_gratings.stopped'))),
+    }),
+    axis=1,
+)
 
 # create trials dataframe
 def trials(row):
@@ -48,7 +49,7 @@ def trials(row):
 
     # define inputs
     deltaf_f   = np.asarray(row[('suite2p', 'deltaf_f')])  
-    timestamps = np.asarray(row[('meta', 'time_vector')])      
+    timestamps = np.asarray(row[('suite2p', 'time_zero_s')])      
     trial_df   = row[('psychopy', 'trial_stamps')]          
 
     all_trials = []
@@ -409,6 +410,8 @@ def compute_task_grating_selectivity(dataset: pd.DataFrame, task_name: str = 'ta
     return summary_df
 
 grating_selectivity_summary = compute_task_grating_selectivity(dataset)
+
+
 
 #%% COMBINE OSI/DSI ACROSS ALL SUBJECTS
 # Make percent-of-baseline OSI distribution plot per injection condition
@@ -1223,40 +1226,30 @@ def plot_direction_tuning_percentile_panels(
 ):
     """Plot separate direction tuning summaries split by a DSI threshold."""
     relative_angles, injection_labels, roi_entries = _collect_direction_tuning_entries(summary_df, task_name)
-
     dsi_values = np.asarray([entry.get('dsi', np.nan) for entry in roi_entries], dtype=float)
-    if dsi_values.size == 0:
-        raise ValueError('No DSI values available for threshold split')
-
     finite_mask = np.isfinite(dsi_values)
     if not finite_mask.any():
         raise ValueError('No finite DSI values available for threshold split')
 
-    threshold = float(dsi_threshold)
-    if not np.isfinite(threshold):
-        threshold = 0.3
-
+    threshold = float(dsi_threshold) if np.isfinite(dsi_threshold) else 0.3
     high_entries = [entry for entry, value in zip(roi_entries, dsi_values) if np.isfinite(value) and value > threshold]
     low_entries = [entry for entry, value in zip(roi_entries, dsi_values) if np.isfinite(value) and value <= threshold]
 
     finite_values = dsi_values[finite_mask]
-
+    finite_indices = np.flatnonzero(finite_mask)
     if not high_entries:
-        best_idx = int(np.nanargmax(finite_values))
-        high_entries = [roi_entries[np.flatnonzero(finite_mask)[best_idx]]]
-
+        high_entries = [roi_entries[finite_indices[int(np.nanargmax(finite_values))]]]
     if not low_entries:
-        worst_idx = int(np.nanargmin(finite_values))
-        low_entries = [roi_entries[np.flatnonzero(finite_mask)[worst_idx]]]
+        low_entries = [roi_entries[finite_indices[int(np.nanargmin(finite_values))]]]
 
     title_suffix = f" ({task_name})" if task_name is not None else ""
     high_title = f'High-DSI ROIs (> {threshold:.2f} DSI){title_suffix}'
     low_title = f'Low-DSI ROIs (<= {threshold:.2f} DSI){title_suffix}'
 
-    high_fig = _render_direction_tuning_plot(high_entries, injection_labels, relative_angles, high_title, figsize)
-    low_fig = _render_direction_tuning_plot(low_entries, injection_labels, relative_angles, low_title, figsize)
-
-    return high_fig, low_fig
+    return (
+        _render_direction_tuning_plot(high_entries, injection_labels, relative_angles, high_title, figsize),
+        _render_direction_tuning_plot(low_entries, injection_labels, relative_angles, low_title, figsize),
+    )
 
 
 combined_direction_tuning_fig = plot_combined_preferred_direction_tuning(grating_selectivity_summary)
@@ -1397,6 +1390,446 @@ def compute_peak_session_stats(database, session_labels=None):
     return session_stats, fig
 
 test_stats, test_fig = compute_peak_session_stats(dataset)
+
+
+#%% PERISTIMULUS TIME HISTOGRAM
+
+# event detection during dff_on and dff_off periods
+# use num_event bins to create histogram of peristimulus time histogram
+# compute event probability during pre and post stimulus periods using all trials in a condition
+
+def detect_trial_events(
+    dataset,
+    prominence=0.5,
+    task=None,
+):
+    """Detect per-trial ROI events using scipy.signal.find_peaks.
+
+    Returns a MultiIndex-column DataFrame with trial metadata and event timing.
+    """
+    import numpy as np
+    import pandas as pd
+    from scipy.signal import find_peaks
+
+    selection = dataset
+    index_names = list(selection.index.names)
+    if task is not None and 'task' in index_names:
+        selection = selection.xs(task, level='task')
+
+    event_records = []
+
+    for idx, row in selection.iterrows():
+        if isinstance(idx, tuple):
+            subject_label = idx[index_names.index('subject')] if 'subject' in index_names else idx[0]
+            session_label = idx[index_names.index('session')] if 'session' in index_names else (idx[1] if len(idx) > 1 else None)
+            task_label = idx[index_names.index('task')] if 'task' in index_names else (idx[2] if len(idx) > 2 else None)
+        else:
+            subject_label = idx if 'subject' in index_names else None
+            session_label = None
+            task_label = None
+
+        dff = np.asarray(row[('suite2p', 'deltaf_f')])
+        timestamps = np.asarray(row[('suite2p', 'time_native_s')])
+        if timestamps.size:
+            timestamps = timestamps - timestamps[0]
+        trials_df = row.get(('meta', 'trials'))
+        gray_windows = row.get(('psychopy', 'gratings_gray_windows'))
+        gratings_windows = row.get(('psychopy', 'gratings_gratings_windows'))
+
+        injection_label = np.nan
+        if ('session_config', 'injection') in selection.columns:
+            injection_label = row[('session_config', 'injection')]
+        elif ('meta', 'injection') in selection.columns:
+            injection_label = row[('meta', 'injection')]
+        if isinstance(injection_label, (np.ndarray, list, pd.Series)):
+            injection_label = injection_label[0] if len(injection_label) else np.nan
+
+        if dff.ndim != 2:
+            continue
+
+        gray_starts = np.asarray(gray_windows if gray_windows is not None else [], dtype=float).ravel()
+        gratings_starts = np.asarray(gratings_windows if gratings_windows is not None else [], dtype=float).ravel()
+        gray_starts = gray_starts[np.isfinite(gray_starts)]
+        gratings_starts = gratings_starts[np.isfinite(gratings_starts)]
+
+        if gray_starts.size == 0 or gratings_starts.size == 0:
+            continue
+
+        if timestamps.size == 0:
+            continue
+
+        max_trials = min(len(gray_starts), len(gratings_starts))
+        if trials_df is not None and hasattr(trials_df, "__len__"):
+            max_trials = min(max_trials, len(trials_df)) if len(trials_df) else max_trials
+        if max_trials == 0:
+            continue
+
+        roi_indices = range(dff.shape[0])
+        for trial_index in range(max_trials):
+            trial = None
+            if trials_df is not None and hasattr(trials_df, "iloc") and len(trials_df) > trial_index:
+                trial = trials_df.iloc[trial_index]
+            if trial_index >= max_trials:
+                break
+            trial_start = float(gray_starts[trial_index])
+            stim_on_time = float(gratings_starts[trial_index])
+            if trial_index + 1 < len(gray_starts):
+                trial_end = float(gray_starts[trial_index + 1])
+            else:
+                fallback_end = np.nan
+                if trial is not None:
+                    fallback_end = trial.get('trial_end', np.nan)
+                if np.isfinite(fallback_end):
+                    trial_end = float(fallback_end)
+                elif timestamps.size > 0 and np.isfinite(timestamps[-1]):
+                    trial_end = float(timestamps[-1])
+                else:
+                    trial_end = np.nan
+
+            if not np.isfinite(trial_start) or not np.isfinite(trial_end):
+                continue
+            trial_mask = (timestamps >= trial_start) & (timestamps <= trial_end)
+            if not np.any(trial_mask):
+                continue
+
+            trial_times = timestamps[trial_mask]
+            roi_traces = np.asarray(dff[:, trial_mask], dtype=float)
+            if roi_traces.size == 0:
+                continue
+
+            base_record = {
+                ('meta', 'subject'): subject_label,
+                ('meta', 'session'): session_label,
+                ('meta', 'task'): task_label,
+                ('meta', 'injection'): injection_label,
+                ('meta', 'trial'): trial.get('trial', trial_index) if trial is not None else trial_index,
+                ('meta', 'block'): trial.get('block', np.nan) if trial is not None else np.nan,
+                ('meta', 'direction'): trial.get('direction', np.nan) if trial is not None else np.nan,
+                ('meta', 'orientation'): trial.get('orientation', np.nan) if trial is not None else np.nan,
+                ('meta', 'stim_on_time'): stim_on_time,
+                ('meta', 'trial_start'): trial_start,
+                ('meta', 'trial_end'): trial_end,
+            }
+
+            for roi_index in roi_indices:
+                if roi_index < 0 or roi_index >= roi_traces.shape[0]:
+                    raise IndexError(f"roi_id {roi_index} out of range (n_rois={roi_traces.shape[0]})")
+                roi_trace = roi_traces[roi_index]
+                if roi_trace.size == 0:
+                    continue
+
+                peaks, properties = find_peaks(roi_trace, prominence=prominence)
+                for peak_idx, frame_idx in enumerate(peaks):
+                    peak_time_abs = float(trial_times[frame_idx])
+                    peak_time_rel = peak_time_abs - stim_on_time
+                    record = {
+                        **base_record,
+                        ('events', 'roi_id'): int(roi_index),
+                        ('events', 'peak_frame'): int(frame_idx),
+                        ('events', 'peak_value'): float(roi_trace[frame_idx]),
+                        ('events', 'peak_time_abs'): peak_time_abs,
+                        ('events', 'peak_time_rel'): peak_time_rel,
+                    }
+
+                    for prop_name, values in properties.items():
+                        if isinstance(values, np.ndarray):
+                            record[('events', prop_name)] = float(values[peak_idx])
+                        else:
+                            record[('events', prop_name)] = float(values)
+
+                    event_records.append(record)
+
+    if not event_records:
+        empty_columns = [
+            ('meta', 'subject'),
+            ('meta', 'session'),
+            ('meta', 'task'),
+            ('meta', 'injection'),
+            ('meta', 'trial'),
+            ('meta', 'block'),
+            ('meta', 'direction'),
+            ('meta', 'orientation'),
+            ('meta', 'stim_on_time'),
+            ('meta', 'trial_start'),
+            ('meta', 'trial_end'),
+            ('events', 'roi_id'),
+            ('events', 'peak_frame'),
+            ('events', 'peak_value'),
+            ('events', 'peak_time_abs'),
+            ('events', 'peak_time_rel'),
+        ]
+        return pd.DataFrame(columns=pd.MultiIndex.from_tuples(empty_columns))
+
+    events_df = pd.DataFrame(event_records)
+    events_df.columns = pd.MultiIndex.from_tuples(events_df.columns)
+    return events_df
+
+def psth(
+    events_df,
+    roi_id,
+    event_name='stimulus_onset',
+    pre_time_s=3.0,
+    post_time_s=2.0,
+    bin_size_s=0.2,
+    subject=None,
+    session=None,
+    task=None,
+):
+    """
+    Compute and plot peristimulus time histogram (PSTH) using detected events.
+
+        Args:
+            events_df   : DataFrame produced by detect_trial_events
+            roi_id      : ROI index to analyze (int)
+            event_name  : Label for the aligned event (used in plot title)
+            pre_time_s  : Time before event to include (seconds)
+            post_time_s : Time after event to include (seconds)
+            bin_size_s  : Bin size (seconds)
+            subject     : Optional subject selector (index level)
+            session     : Optional session selector (index level)
+            task        : Optional task selector (index level)
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    if events_df is None or events_df.empty:
+        raise ValueError('events_df is empty. Run detect_trial_events first.')
+
+    selection = events_df.copy()
+    if subject is not None:
+        selection = selection[selection[('meta', 'subject')] == subject]
+    if session is not None:
+        selection = selection[selection[('meta', 'session')] == session]
+    if task is not None:
+        selection = selection[selection[('meta', 'task')] == task]
+
+    selection = selection[selection[('events', 'roi_id')] == roi_id]
+    if selection.empty:
+        raise ValueError('No events match the requested filters')
+
+    bins = np.arange(-pre_time_s, post_time_s + bin_size_s, bin_size_s)
+    event_times = selection[('events', 'peak_time_rel')].to_numpy(dtype=float)
+    event_times = event_times[np.isfinite(event_times)]
+    counts, _ = np.histogram(event_times, bins=bins)
+
+    psth_values = counts.astype(float)
+
+    fig, ax = plt.subplots(figsize=(8, 4))
+    bin_centers = (bins[:-1] + bins[1:]) / 2
+    ax.bar(bin_centers, psth_values, width=bin_size_s, color='gray', edgecolor='black')
+    ax.axvline(0, color='red', linestyle='--', label='Stimulus ON')
+    ax.set_xlabel('Time (s) relative to event')
+    ax.set_ylabel('Event count')
+    ax.set_title(f'PSTH for ROI {roi_id}')
+    ax.legend()
+    plt.tight_layout()
+
+    return psth_values, fig
+
+events_df = detect_trial_events(
+    dataset,
+    prominence=0.7,
+    task='task-gratings',
+)
+
+psth(events_df, roi_id=0, event_name='stimulus_onset')
+
+#%% MEAN PSTH ACROSS ROIS
+def psth_mean_across_rois(
+    events_df,
+    event_name='stimulus_onset',
+    pre_time_s=3.0,
+    post_time_s=2.0,
+    bin_size_s=0.2,
+    subject=None,
+    task=None,
+):
+    """
+    Compute and plot average event-count PSTH across all ROIs for all sessions
+    in a subject (subplot per session).
+
+        Args:
+            events_df   : DataFrame produced by detect_trial_events
+            event_name  : Label for the aligned event (used in plot title)
+            pre_time_s  : Time before event to include (seconds)
+            post_time_s : Time after event to include (seconds)
+            bin_size_s  : Bin size (seconds)
+            subject     : Subject selector (required for multi-session plot)
+            task        : Optional task selector (index level)
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    if events_df is None or events_df.empty:
+        raise ValueError('events_df is empty. Run detect_trial_events first.')
+    if subject is None:
+        raise ValueError('subject is required to plot all sessions')
+
+    selection = events_df.copy()
+    selection = selection[selection[('meta', 'subject')] == subject]
+    if task is not None:
+        selection = selection[selection[('meta', 'task')] == task]
+
+    if selection.empty:
+        raise ValueError('No events match the requested filters')
+
+    sessions = selection[('meta', 'session')].dropna().unique().tolist()
+    if len(sessions) == 0:
+        raise ValueError('No sessions found for the requested subject')
+
+    bins = np.arange(-pre_time_s, post_time_s + bin_size_s, bin_size_s)
+    bin_centers = (bins[:-1] + bins[1:]) / 2
+
+    n_panels = len(sessions)
+    n_cols = 2
+    n_rows = int(np.ceil(n_panels / n_cols))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(10, 4 * n_rows), sharex=True, sharey=True)
+    axes = np.atleast_1d(axes).ravel()
+
+    mean_counts_by_session = {}
+    for ax, session_label in zip(axes, sessions):
+        session_df = selection[selection[('meta', 'session')] == session_label]
+        roi_ids = session_df[('events', 'roi_id')].dropna().unique().tolist()
+        if len(roi_ids) == 0:
+            mean_counts = np.zeros(len(bins) - 1, dtype=float)
+        else:
+            roi_counts = []
+            for roi_id in roi_ids:
+                roi_events = session_df[session_df[('events', 'roi_id')] == roi_id]
+                event_times = roi_events[('events', 'peak_time_rel')].to_numpy(dtype=float)
+                event_times = event_times[np.isfinite(event_times)]
+                counts, _ = np.histogram(event_times, bins=bins)
+                roi_counts.append(counts.astype(float))
+            mean_counts = np.mean(np.stack(roi_counts, axis=0), axis=0)
+
+        mean_counts_by_session[session_label] = mean_counts
+        injection_vals = session_df[('meta', 'injection')].dropna().unique().tolist()
+        injection_label = injection_vals[0] if injection_vals else 'Unknown'
+
+        ax.bar(bin_centers, mean_counts, width=bin_size_s, color='gray', edgecolor='black')
+        ax.axvline(0, color='red', linestyle='--', label='Stimulus ON')
+        ax.set_title(f'{injection_label} ({session_label})')
+        ax.set_xlabel('Time (s) relative to event')
+        ax.set_ylabel('Mean event count (across ROIs)')
+
+    for ax in axes[n_panels:]:
+        ax.set_visible(False)
+
+    handles, labels = axes[0].get_legend_handles_labels()
+    if handles:
+        fig.legend(handles, labels, loc='upper right')
+
+    plt.tight_layout()
+    return mean_counts_by_session, fig
+
+def event_probability_by_injection(
+    events_df,
+    event_name='stimulus_onset',
+    pre_time_s=3.0,
+    post_time_s=2.0,
+    bin_size_s=0.2,
+    task=None,
+    injection_order=None,
+):
+    """
+    Compute event probability per time bin and plot one panel per injection.
+
+    Uses mean_counts_by_session to convert counts to probabilities, then
+    averages across subjects/sessions for each injection label.
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    if events_df is None or events_df.empty:
+        raise ValueError('events_df is empty. Run detect_trial_events first.')
+
+    selection = events_df.copy()
+    if task is not None:
+        selection = selection[selection[('meta', 'task')] == task]
+
+    if selection.empty:
+        raise ValueError('No events match the requested filters')
+
+    bins = np.arange(-pre_time_s, post_time_s + bin_size_s, bin_size_s)
+    bin_centers = (bins[:-1] + bins[1:]) / 2
+
+    mean_counts_by_session = {}
+    session_keys = selection[[('meta', 'subject'), ('meta', 'session')]].drop_duplicates()
+    for _, row in session_keys.iterrows():
+        subject_label = row[('meta', 'subject')]
+        session_label = row[('meta', 'session')]
+        session_df = selection[
+            (selection[('meta', 'subject')] == subject_label)
+            & (selection[('meta', 'session')] == session_label)
+        ]
+        if session_df.empty:
+            continue
+        roi_ids = session_df[('events', 'roi_id')].dropna().unique().tolist()
+        if len(roi_ids) == 0:
+            continue
+
+        roi_counts = []
+        for roi_id in roi_ids:
+            roi_events = session_df[session_df[('events', 'roi_id')] == roi_id]
+            event_times = roi_events[('events', 'peak_time_rel')].to_numpy(dtype=float)
+            event_times = event_times[np.isfinite(event_times)]
+            counts, _ = np.histogram(event_times, bins=bins)
+            roi_counts.append(counts.astype(float))
+
+        mean_counts = np.mean(np.stack(roi_counts, axis=0), axis=0)
+        injection_vals = session_df[('meta', 'injection')].dropna().unique().tolist()
+        injection_label = injection_vals[0] if injection_vals else 'Unknown'
+        mean_counts_by_session[(subject_label, session_label, injection_label)] = mean_counts
+
+    if not mean_counts_by_session:
+        raise ValueError('No session-level counts available to compute probabilities')
+
+    prob_by_injection = {}
+    for (subject_label, session_label, injection_label), mean_counts in mean_counts_by_session.items():
+        total = np.sum(mean_counts)
+        if total > 0:
+            prob = mean_counts / total
+        else:
+            prob = np.zeros_like(mean_counts)
+        prob_by_injection.setdefault(injection_label, []).append(prob)
+
+    if injection_order is None:
+        injection_order = ['Baseline', 'Saline', 'Low', 'High']
+    injection_labels = [label for label in injection_order if label in prob_by_injection]
+    injection_labels.extend([label for label in prob_by_injection.keys() if label not in injection_labels])
+
+    n_panels = max(1, len(injection_labels))
+    n_cols = 2
+    n_rows = int(np.ceil(n_panels / n_cols))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(10, 4 * n_rows), sharex=True, sharey=True)
+    axes = np.atleast_1d(axes).ravel()
+
+    mean_prob_by_injection = {}
+    for ax, injection_label in zip(axes, injection_labels):
+        probs = prob_by_injection.get(injection_label, [])
+        if len(probs) == 0:
+            mean_prob = np.zeros(len(bins) - 1, dtype=float)
+        else:
+            mean_prob = np.mean(np.stack(probs, axis=0), axis=0)
+        mean_prob_by_injection[injection_label] = mean_prob
+
+        ax.bar(bin_centers, mean_prob, width=bin_size_s, color='gray', edgecolor='black')
+        ax.axvline(0, color='red', linestyle='--', label='Stimulus ON')
+        ax.set_title(f'{injection_label}')
+        ax.set_xlabel('Time (s) relative to event')
+        ax.set_ylabel('Event probability')
+
+    for ax in axes[n_panels:]:
+        ax.set_visible(False)
+
+    handles, labels = axes[0].get_legend_handles_labels()
+    if handles:
+        fig.legend(handles, labels, loc='upper right')
+
+    plt.tight_layout()
+    return mean_prob_by_injection, fig
+
+psth_mean_across_rois(events_df, subject='ACUTEVIS06', event_name='stimulus_onset')
 
 
 
