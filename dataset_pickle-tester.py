@@ -10,16 +10,12 @@ import matplotlib.pyplot as plt
 from collections import defaultdict 
 from collections.abc import Mapping, Sequence
 
-dataset = pd.read_pickle(r"C:\Projects\260210_ACUTEVIS_dataset.pkl")
+dataset = pd.read_pickle(r"D:\Projects\ACUTEVIS\picklejar\260212_ACUTEVIS_dataset.pkl")
 
 keys = pd.DataFrame(dataset.keys())
 print(keys)
 
 #%% CREATE TRIALS DATAFRAME
-
-dataset[('suite2p','time_zero_s')] = dataset[('suite2p','time_native_s')].map(
-    lambda x: np.asarray(x) - np.asarray(x)[0] if x is not None and len(x) else x
-)
 
 # Per-row DataFrame of trial stamps (same columns as your psychopy-derived structure)
 def _to_float_array(values):
@@ -29,14 +25,25 @@ def _to_float_array(values):
         values = values.to_numpy()
     return np.asarray(values, dtype=float).ravel()
 
-dataset[('psychopy', 'trial_stamps')] = dataset.apply(
-    lambda row: pd.DataFrame({
+def _trial_stamps_first_n(row, max_trials=120):
+    columns = {
         "trial_num": _to_float_array(row.get(('psychopy', 'gratings_trials.thisN'))),
-        "trial_start": _to_float_array(row.get(('psychopy', 'gratings_display_gratings.started'))),
-        "gray_start": _to_float_array(row.get(('psychopy', 'gratings_stim_grayScreen.started'))),
-        "gratings_start": _to_float_array(row.get(('psychopy', 'gratings_stim_grating.started'))),
-        "trial_end": _to_float_array(row.get(('psychopy', 'gratings_display_gratings.stopped'))),
-    }),
+        "gray_start": _to_float_array(row.get(('psychopy', 'gratings_window_gray_start'))),
+        "gray_end": _to_float_array(row.get(('psychopy', 'gratings_window_gray_stop'))),
+        "gratings_start": _to_float_array(row.get(('psychopy', 'gratings_window_grating_start'))),
+        "gratings_end": _to_float_array(row.get(('psychopy', 'gratings_window_grating_stop'))),
+        "trial_end": _to_float_array(row.get(('psychopy', 'stop_s'))),
+    }
+
+    lengths = [arr.size for arr in columns.values()]
+    if not lengths:
+        return pd.DataFrame(columns=list(columns.keys()))
+
+    n_trials = min(min(lengths), int(max_trials))
+    return pd.DataFrame({name: arr[:n_trials] for name, arr in columns.items()})
+
+dataset[('psychopy', 'trial_stamps')] = dataset.apply(
+    lambda row: _trial_stamps_first_n(row, max_trials=120),
     axis=1,
 )
 
@@ -49,11 +56,15 @@ def trials(row):
 
     # define inputs
     deltaf_f   = np.asarray(row[('suite2p', 'deltaf_f')])  
-    timestamps = np.asarray(row[('suite2p', 'time_zero_s')])      
+    timestamps = np.asarray(row[('suite2p', 'time_elapsed_s')])      
     trial_df   = row[('psychopy', 'trial_stamps')]          
 
     all_trials = []
-    for trial_id, (start, grating, stop) in enumerate(zip(trial_df['trial_start'], trial_df['gratings_start'], trial_df['trial_end'])):
+    for trial_id, (start, grating, stop) in enumerate(zip(
+        trial_df['gray_start'][:120],
+        trial_df['gratings_start'][:120],
+        trial_df['trial_end'][:120],
+    )):
         trial_mask    = (timestamps >= start) & (timestamps < stop)
         off_mask      = (timestamps >= start) & (timestamps < grating)
         on_mask       = (timestamps >= grating) & (timestamps < stop)
@@ -94,10 +105,22 @@ def _roi_mean_response(trials_df: pd.DataFrame):
     dff_off_trials = trials_df['dff_off'].to_numpy()
     if len(dff_on_trials) == 0 or len(dff_off_trials) == 0:
         return None
-    on_stack = np.stack(dff_on_trials, axis=0)
-    off_stack = np.stack(dff_off_trials, axis=0)
-    roi_on = np.nanmean(on_stack, axis=(0, 2))
-    roi_off = np.nanmean(off_stack, axis=(0, 2))
+
+    on_trial_means = [
+        np.nanmean(np.asarray(trial, dtype=float), axis=1)
+        for trial in dff_on_trials
+        if np.asarray(trial).ndim == 2 and np.asarray(trial).shape[1] > 0
+    ]
+    off_trial_means = [
+        np.nanmean(np.asarray(trial, dtype=float), axis=1)
+        for trial in dff_off_trials
+        if np.asarray(trial).ndim == 2 and np.asarray(trial).shape[1] > 0
+    ]
+    if len(on_trial_means) == 0 or len(off_trial_means) == 0:
+        return None
+
+    roi_on = np.nanmean(np.vstack(on_trial_means), axis=0)
+    roi_off = np.nanmean(np.vstack(off_trial_means), axis=0)
     return roi_on, roi_off
 
 roi_by_injection = defaultdict(lambda: {'on': [], 'off': []})
@@ -274,8 +297,14 @@ def compute_task_grating_selectivity(dataset: pd.DataFrame, task_name: str = 'ta
         dff_arrays = trials.to_numpy()
         if len(dff_arrays) == 0:
             return None
-        trial_stack = np.stack(dff_arrays, axis=0)
-        return np.nanmean(trial_stack, axis=2)
+        trial_means = [
+            np.nanmean(np.asarray(trial, dtype=float), axis=1)
+            for trial in dff_arrays
+            if np.asarray(trial).ndim == 2 and np.asarray(trial).shape[1] > 0
+        ]
+        if len(trial_means) == 0:
+            return None
+        return np.vstack(trial_means)
 
     def _mean_map(angles: np.ndarray, labels: np.ndarray, trial_means: np.ndarray) -> dict[float, np.ndarray]:
         n_rois = trial_means.shape[1]
@@ -1452,42 +1481,66 @@ def detect_trial_events(
         gray_starts = gray_starts[np.isfinite(gray_starts)]
         gratings_starts = gratings_starts[np.isfinite(gratings_starts)]
 
-        if gray_starts.size == 0 or gratings_starts.size == 0:
-            continue
-
         if timestamps.size == 0:
             continue
 
-        max_trials = min(len(gray_starts), len(gratings_starts))
-        if trials_df is not None and hasattr(trials_df, "__len__"):
-            max_trials = min(max_trials, len(trials_df)) if len(trials_df) else max_trials
+        trials_available = trials_df is not None and hasattr(trials_df, "iloc") and hasattr(trials_df, "__len__") and len(trials_df) > 0
+
+        if trials_available:
+            max_trials = len(trials_df)
+        else:
+            max_trials = min(len(gray_starts), len(gratings_starts))
+
         if max_trials == 0:
             continue
 
         roi_indices = range(dff.shape[0])
         for trial_index in range(max_trials):
             trial = None
-            if trials_df is not None and hasattr(trials_df, "iloc") and len(trials_df) > trial_index:
+            if trials_available and len(trials_df) > trial_index:
                 trial = trials_df.iloc[trial_index]
             if trial_index >= max_trials:
                 break
-            trial_start = float(gray_starts[trial_index])
-            stim_on_time = float(gratings_starts[trial_index])
-            if trial_index + 1 < len(gray_starts):
-                trial_end = float(gray_starts[trial_index + 1])
-            else:
-                fallback_end = np.nan
-                if trial is not None:
-                    fallback_end = trial.get('trial_end', np.nan)
+
+            trial_start = np.nan
+            stim_on_time = np.nan
+            trial_end = np.nan
+
+            if trial is not None:
+                trial_time_off = np.asarray(trial.get('time_off', []), dtype=float).ravel()
+                trial_time_on = np.asarray(trial.get('time_on', []), dtype=float).ravel()
+                trial_time = np.asarray(trial.get('time', []), dtype=float).ravel()
+
+                trial_time_off = trial_time_off[np.isfinite(trial_time_off)]
+                trial_time_on = trial_time_on[np.isfinite(trial_time_on)]
+                trial_time = trial_time[np.isfinite(trial_time)]
+
+                if trial_time_off.size:
+                    trial_start = float(trial_time_off[0])
+                if trial_time_on.size:
+                    stim_on_time = float(trial_time_on[0])
+
+                fallback_end = trial.get('trial_end', np.nan)
                 if np.isfinite(fallback_end):
                     trial_end = float(fallback_end)
+                elif trial_time.size:
+                    trial_end = float(trial_time[-1])
+
+            if not np.isfinite(trial_start) and trial_index < len(gray_starts):
+                trial_start = float(gray_starts[trial_index])
+            if not np.isfinite(stim_on_time) and trial_index < len(gratings_starts):
+                stim_on_time = float(gratings_starts[trial_index])
+            if not np.isfinite(trial_end):
+                if trial_index + 1 < len(gray_starts):
+                    trial_end = float(gray_starts[trial_index + 1])
                 elif timestamps.size > 0 and np.isfinite(timestamps[-1]):
                     trial_end = float(timestamps[-1])
-                else:
-                    trial_end = np.nan
 
-            if not np.isfinite(trial_start) or not np.isfinite(trial_end):
+            if not np.isfinite(trial_start) or not np.isfinite(stim_on_time) or not np.isfinite(trial_end):
                 continue
+            if trial_end <= trial_start:
+                continue
+
             trial_mask = (timestamps >= trial_start) & (timestamps <= trial_end)
             if not np.any(trial_mask):
                 continue
@@ -1568,8 +1621,8 @@ def psth(
     events_df,
     roi_id,
     event_name='stimulus_onset',
-    pre_time_s=3.0,
-    post_time_s=2.0,
+    pre_time_s=None,
+    post_time_s=None,
     bin_size_s=0.2,
     subject=None,
     session=None,
@@ -1582,8 +1635,8 @@ def psth(
             events_df   : DataFrame produced by detect_trial_events
             roi_id      : ROI index to analyze (int)
             event_name  : Label for the aligned event (used in plot title)
-            pre_time_s  : Time before event to include (seconds)
-            post_time_s : Time after event to include (seconds)
+            pre_time_s  : Deprecated (ignored). Window inferred from trial start/on/off metadata.
+            post_time_s : Deprecated (ignored). Window inferred from trial start/on/off metadata.
             bin_size_s  : Bin size (seconds)
             subject     : Optional subject selector (index level)
             session     : Optional session selector (index level)
@@ -1607,9 +1660,43 @@ def psth(
     if selection.empty:
         raise ValueError('No events match the requested filters')
 
-    bins = np.arange(-pre_time_s, post_time_s + bin_size_s, bin_size_s)
+    trial_window_cols = [
+        ('meta', 'subject'),
+        ('meta', 'session'),
+        ('meta', 'task'),
+        ('meta', 'trial'),
+        ('meta', 'trial_start'),
+        ('meta', 'stim_on_time'),
+        ('meta', 'trial_end'),
+    ]
+    missing_cols = [col for col in trial_window_cols if col not in selection.columns]
+    if missing_cols:
+        raise KeyError(f'events_df missing trial timing columns required for dynamic windowing: {missing_cols}')
+
+    trial_windows = selection[trial_window_cols].drop_duplicates(
+        subset=[('meta', 'subject'), ('meta', 'session'), ('meta', 'task'), ('meta', 'trial')]
+    )
+    pre_durations = (
+        trial_windows[('meta', 'stim_on_time')].to_numpy(dtype=float)
+        - trial_windows[('meta', 'trial_start')].to_numpy(dtype=float)
+    )
+    post_durations = (
+        trial_windows[('meta', 'trial_end')].to_numpy(dtype=float)
+        - trial_windows[('meta', 'stim_on_time')].to_numpy(dtype=float)
+    )
+
+    pre_durations = pre_durations[np.isfinite(pre_durations) & (pre_durations > 0)]
+    post_durations = post_durations[np.isfinite(post_durations) & (post_durations > 0)]
+    if pre_durations.size == 0 or post_durations.size == 0:
+        raise ValueError('Unable to infer PSTH window from trial timing metadata')
+
+    pre_window_s = float(np.nanmax(pre_durations))
+    post_window_s = float(np.nanmax(post_durations))
+    bins = np.arange(-pre_window_s, post_window_s + bin_size_s, bin_size_s)
+
     event_times = selection[('events', 'peak_time_rel')].to_numpy(dtype=float)
     event_times = event_times[np.isfinite(event_times)]
+    event_times = event_times[(event_times >= -pre_window_s) & (event_times <= post_window_s)]
     counts, _ = np.histogram(event_times, bins=bins)
 
     psth_values = counts.astype(float)
