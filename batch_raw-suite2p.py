@@ -5,8 +5,8 @@ from suite2p import default_ops
 import cupy as cp
 import tifffile
 
-DATA_PATH = Path(r'E:\inbox')
-SAVE_PATH = Path(r'E:\inbox\processed')
+DATA_PATH = Path(r'G:\Projects\spont')
+SAVE_PATH = Path(r'G:\Projects\spont\processed')
 FRAME_SHAPE = (512, 512)
 RAW_SUFFIX = '001.raw'
 TIFF_SUFFIX = '.tif*'
@@ -19,12 +19,13 @@ SESSION_MAP = {
 TASK_MAP = {
     'grat': 'task-gratings',
     'mov': 'task-movies',
+    'spont': 'task-spontaneous',
 }
 CONDITION_MAP = {
-    251014: 'baseline',
-    251015: 'saline',
-    251016: 'low',
-    251017: 'high',
+    260305: 'baseline',
+    260307: 'saline',
+    260308: 'high',
+    260309: 'low',
 }
 
 def discover_raw_files(root: Path):
@@ -84,10 +85,10 @@ ops = default_ops()
 
 # main settings
 ops['tau'] = 2.0 # gcamp8s
-ops['fs'] = 15
+ops['fs'] = 30
 
 # IO
-ops['save_path0'] = r"E:\Projects\ACUTEVIS\processed"
+ops['save_path0'] = r"G:\Projects\spont\processed"
 ops['save_folder'] = '251015_sub-ACUTEVIS14_ses-02_task-movies_low_suite2p'
 
 # output settings
@@ -115,7 +116,7 @@ ops['min_neuropil_pixels'] = 300
 # spike deconvolution
 ops['spikedetect'] = False
 
-np.save(r"E:\Projects\ACUTEVIS\processed\gcamp8s_ops.npy", ops)
+np.save(r"G:\Projects\spont\processed\gcamp8s_ops.npy", ops)
 
 for tiff_path in tiff_files:
     db = {'data_path': [str(tiff_path.parent)], 'tiff_list': [str(tiff_path)]}
@@ -123,6 +124,6 @@ for tiff_path in tiff_files:
     print(f'Running suite2p for {tiff_path}')
     run_s2p(ops=ops, db=db)
 
-ops = np.load(r"E:\Projects\ACUTEVIS\processed\gcamp8s_ops.npy", allow_pickle=True).item()
+ops = np.load(r"G:\Projects\spont\processed\gcamp8s_ops.npy", allow_pickle=True).item()
 
 print(ops)
