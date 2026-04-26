@@ -1,7 +1,10 @@
 import argparse
+import csv
 import queue
 import threading
 import time
+from datetime import datetime
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
@@ -10,12 +13,31 @@ import serial
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Plot incoming serial numbers in real time.")
-    parser.add_argument("--port", default="COM5", help="Serial port name (default: COM5).")
+    parser.add_argument("--port", default="COM7", help="Serial port name (default: COM5).")
     parser.add_argument("--baud", type=int, default=115200, help="Serial baud rate (default: 115200).")
     parser.add_argument("--timeout", type=float, default=0.1, help="Serial read timeout in seconds (default: 0.1).")
     parser.add_argument("--window", type=int, default=500, help="Number of points to keep on screen (default: 500).")
     parser.add_argument("--interval", type=int, default=50, help="Plot refresh interval in milliseconds (default: 50).")
+    parser.add_argument("--subject", default="000", help="Subject ID (default: 000).")
+    parser.add_argument("--session", default="01", help="Session number (default: 01).")
     return parser.parse_args()
+
+
+def save_to_csv(times: list, channels: list, subject_id: str, session_num: str) -> None:
+    """Write collected timestamp and channel data to a CSV file."""
+    date_str = datetime.now().strftime("%y%m%d")
+    filename = f"{date_str}_sub-{subject_id}_ses-{session_num}_HFD.csv"
+    filepath = Path(filename)
+
+    header = ["timestamp"] + [f"channel_{i}" for i in range(len(channels))]
+    with filepath.open("w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(header)
+        for i, t in enumerate(times):
+            row = [t] + [ch[i] if i < len(ch) else "" for ch in channels]
+            writer.writerow(row)
+
+    print(f"Saved {len(times)} rows to {filepath.resolve()}")
 
 
 def serial_reader(ser: serial.Serial, target: queue.Queue, stop_event: threading.Event) -> None:
@@ -61,6 +83,8 @@ def main() -> int:
 
     times = []
     channels = []
+    all_times = []
+    all_channels = []
     lines = []
     start_time = None
 
@@ -86,11 +110,16 @@ def main() -> int:
             if len(channels) < len(values):
                 for _ in range(len(values) - len(channels)):
                     channels.append([float("nan")] * (len(times) - 1))
+                    all_channels.append([float("nan")] * (len(all_times) - 1))
                     (line,) = ax.plot([], [], label=f"Channel {len(channels)}")
                     lines.append(line)
                 ax.legend(loc="upper left")
 
             for index, channel in enumerate(channels):
+                channel.append(values[index] if index < len(values) else float("nan"))
+
+            all_times.append(timestamp - start_time)
+            for index, channel in enumerate(all_channels):
                 channel.append(values[index] if index < len(values) else float("nan"))
 
             if len(times) > args.window:
@@ -118,8 +147,10 @@ def main() -> int:
         reader.join(timeout=1.0)
         ser.close()
 
-    return 0
+    if all_times:
+        save_to_csv(all_times, all_channels, args.subject, args.session)
 
+    return 0
 
 if __name__ == "__main__":
     raise SystemExit(main())
