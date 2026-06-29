@@ -12,7 +12,7 @@ import numpy as np
 import cv2
 import matplotlib.pyplot as plt
 
-VIDEO_DIR = r"C:\2P\Experiment Types\Natural Movies Experiment\movies"
+VIDEO_DIR = r"D:\Projects\ACUTEVIS\movies"
 
 def radial_profile(data: np.ndarray) -> np.ndarray:
     """
